@@ -30,7 +30,12 @@ from satnet.physics.ml_boundary import SafeTrajectoryModel
 from satnet.physics.propagation import TrajectoryPropagationService
 from satnet.risk.classifier import RiskClassifier, RiskThresholds
 from satnet.risk.pc import ProbabilityOfCollisionCalculator
+from satnet.risk.cdm_predictor import CDMRiskPredictor
+from satnet.risk.hybrid import HybridRiskEngine
 from satnet.reporting import ReportService
+
+import io
+import pandas as pd
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.1.0")
@@ -104,6 +109,8 @@ def configure_app() -> None:
         store=store,
     )
     app.state.reports = ReportService()
+    app.state.cdm_predictor = CDMRiskPredictor()
+    app.state.hybrid_engine = HybridRiskEngine()
 
 
 configure_app()
@@ -260,3 +267,99 @@ def report_csv(request: Request, simulation_id: str) -> Response:
 @app.get("/api/reports/{simulation_id}/pdf")
 def report_pdf(request: Request, simulation_id: str) -> Response:
     return _report_response(request, simulation_id, "pdf")
+
+
+# ================================================================
+#  CDM Upload & ML-based Prediction (Hybrid Risk)
+# ================================================================
+
+@app.post("/api/cdm/predict")
+async def predict_cdm(request: Request, file: UploadFile = File(...)) -> dict:
+    """Upload a CDM CSV file and get hybrid risk predictions.
+
+    The system runs the trained XGBoost model on the CDM data and returns
+    ML-based collision probabilities with risk level classifications.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Upload a .csv file containing CDM data.")
+
+    try:
+        raw = await file.read()
+        cdm_df = pd.read_csv(io.BytesIO(raw))
+    except Exception as exc:
+        raise HTTPException(400, f"Failed to read CSV: {exc}") from exc
+
+    if cdm_df.empty:
+        raise HTTPException(422, "CSV file is empty.")
+
+    predictor: CDMRiskPredictor = request.app.state.cdm_predictor
+    hybrid: HybridRiskEngine = request.app.state.hybrid_engine
+
+    if not predictor.is_available():
+        raise HTTPException(
+            503,
+            "ML model is not available. Ensure xgboost_best.json and "
+            "preprocessing artifacts are in the risk/ml/ directory.",
+        )
+
+    try:
+        ml_predictions = predictor.predict(cdm_df)
+    except Exception as exc:
+        raise HTTPException(422, f"Prediction failed: {exc}") from exc
+
+    # Build hybrid results (ML-only mode since CDM upload has no physics Pc)
+    events = []
+    for pred in ml_predictions:
+        # Attempt to get miss distance from CDM data for this event
+        if "event_id" in cdm_df.columns and "miss_distance" in cdm_df.columns:
+            event_rows = cdm_df[cdm_df["event_id"] == pred.event_id]
+            miss_km = event_rows["miss_distance"].iloc[-1] / 1000.0 if len(event_rows) > 0 else 999.0
+        else:
+            miss_km = 999.0
+
+        result = hybrid.fuse(
+            miss_distance_km=miss_km,
+            physics_pc=None,
+            ml_pc=pred.probability,
+            ml_risk_level=pred.risk_level,
+            ml_reason=pred.risk_reason,
+        )
+
+        events.append({
+            "event_id": pred.event_id,
+            "log10_risk": pred.log10_risk,
+            "probability": pred.probability,
+            "risk_level": result.risk_level.value,
+            "confidence": result.confidence.value,
+            "reason": result.reason,
+            "needs_review": result.needs_human_review,
+            "fusion_method": result.fusion_method,
+            "miss_distance_km": miss_km,
+        })
+
+    # Summary stats
+    red_count = sum(1 for e in events if e["risk_level"] == "RED")
+    yellow_count = sum(1 for e in events if e["risk_level"] == "YELLOW")
+    green_count = sum(1 for e in events if e["risk_level"] == "GREEN")
+
+    return {
+        "total_events": len(events),
+        "red_count": red_count,
+        "yellow_count": yellow_count,
+        "green_count": green_count,
+        "events": sorted(events, key=lambda e: e["log10_risk"], reverse=True),
+    }
+
+
+@app.get("/api/ml/status")
+def ml_status(request: Request) -> dict:
+    """Check if the ML model is loaded and available."""
+    predictor: CDMRiskPredictor = request.app.state.cdm_predictor
+    available = predictor.is_available()
+    return {
+        "ml_available": available,
+        "model_type": "XGBoost" if available else None,
+        "hybrid_engine": "active" if available else "inactive",
+        "message": "ML model loaded and ready for CDM predictions." if available
+                   else "ML model not available. Upload model artifacts to risk/ml/.",
+    }

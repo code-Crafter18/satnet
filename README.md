@@ -98,6 +98,13 @@ cd frontend && npm install && npm run dev
 
 Backend: http://localhost:8000 (docs at `/docs`) · Frontend: http://localhost:5173
 
+The dashboard loads four offline SGP4 scenarios from
+`frontend/public/demo/tle/`; each scenario contains four satellites and
+includes close-orbit pairs for demonstrating screening. The model tab can
+load `frontend/public/demo/model_demo.csv`. These are ordinary files, not
+embedded in the React source, so they can be replaced with user data or fresh
+TLEs.
+
 ## Coordinate frames, units, and time
 
 | Quantity     | Value                                        |

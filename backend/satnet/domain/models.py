@@ -84,6 +84,11 @@ class ConjunctionEvent(BaseModel):
     pc_status: str = "unavailable"
     risk_level: RiskLevel
     risk_reason: str
+    # Hybrid risk fields
+    ml_pc: float | None = Field(default=None, description="ML-predicted collision probability")
+    confidence: str | None = Field(default=None, description="HIGH / MEDIUM / LOW")
+    fusion_method: str | None = Field(default=None, description="consensus / ml_only / physics_only / geometric_only")
+    needs_review: bool = Field(default=False, description="Flagged for human review when physics and ML disagree")
 
 
 class SimulationSummary(BaseModel):
