@@ -6,12 +6,41 @@ import * as THREE from "three";
 import {
   Activity, AlertTriangle, Database, Download, Gauge, Globe2,
   Pause, Play, Radio, RefreshCw, Search, ShieldCheck,
-  SlidersHorizontal, Upload, X, Info, Satellite, Zap, Eye
+  SlidersHorizontal, Upload, X, Info, Satellite, Zap, Eye,
+  LogIn, LogOut, User, Mail, Lock, UserPlus, ArrowRight,
+  CheckCircle2
 } from "lucide-react";
 import "./styles.css";
 
 /* ───────────── CONFIG ───────────── */
 const API = import.meta.env.VITE_API_URL || "http://localhost:8001";
+
+/* ───────────── AUTH HELPERS ───────────── */
+function getStoredAuth() {
+  try {
+    const token = localStorage.getItem("satnet_token");
+    const user = JSON.parse(localStorage.getItem("satnet_user") || "null");
+    return token && user ? { token, user } : null;
+  } catch { return null; }
+}
+
+function storeAuth(token, user) {
+  localStorage.setItem("satnet_token", token);
+  localStorage.setItem("satnet_user", JSON.stringify(user));
+}
+
+function clearAuth() {
+  localStorage.removeItem("satnet_token");
+  localStorage.removeItem("satnet_user");
+}
+
+/** Authenticated fetch wrapper — injects the bearer token. */
+async function authFetch(url, options = {}) {
+  const token = localStorage.getItem("satnet_token");
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(url, { ...options, headers });
+}
 
 const DEMO_TLE_OPTIONS = [
   { value: "scenario-a", label: "Scenario A · ISS group" },
@@ -334,7 +363,203 @@ function Stat({ icon: Icon, label, value, sub }) {
 function riskOrder(x) { return { RED: 0, YELLOW: 1, GREEN: 2 }[x] ?? 9; }
 
 /* ───────────── MAIN APP ───────────── */
-function App() {
+/* ───────────── AUTH PAGE ───────────── */
+function AuthPage({ onAuth }) {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  function switchMode(newMode) {
+    setMode(newMode);
+    setError("");
+    setSuccess("");
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setLoading(true);
+    const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/register";
+    const body = mode === "login"
+      ? { email, password }
+      : { name, email, password };
+    try {
+      const r = await fetch(`${API}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "Authentication failed");
+
+      if (mode === "register") {
+        // Direct the user to the login screen after registering, do NOT login directly!
+        setMode("login");
+        setPassword("");
+        setSuccess("Account created successfully! Please sign in with your password.");
+      } else {
+        storeAuth(d.access_token, d.user);
+        onAuth({ token: d.access_token, user: d.user });
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="auth-page">
+      <div className="auth-bg">
+        <div className="auth-stars" />
+        <div className="auth-glow" />
+      </div>
+
+      <div className="auth-container">
+        <div className="auth-brand">
+          <div className="auth-brand-mark"><Satellite size={28} /></div>
+          <div>
+            <strong>SATNET</strong>
+            <small>COLLISION RISK ANALYSIS</small>
+          </div>
+        </div>
+
+        <div className="auth-card">
+          <div className="auth-tabs">
+            <button
+              className={mode === "login" ? "active" : ""}
+              onClick={() => switchMode("login")}
+            >
+              <LogIn size={14} /> Sign In
+            </button>
+            <button
+              className={mode === "register" ? "active" : ""}
+              onClick={() => switchMode("register")}
+            >
+              <UserPlus size={14} /> Register
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit} className="auth-form">
+            <h2>{mode === "login" ? "Welcome back" : "Create account"}</h2>
+            <p className="auth-sub">
+              {mode === "login"
+                ? "Sign in to access the orbital risk dashboard"
+                : "Register for a SatNet mission account"}
+            </p>
+
+            {success && (
+              <div className="auth-success">
+                <CheckCircle2 size={16} />
+                <span>{success}</span>
+              </div>
+            )}
+
+            {error && (
+              <div className="auth-error">
+                <X size={14} /> {error}
+              </div>
+            )}
+
+            {mode === "register" && (
+              <div className="auth-field">
+                <User size={15} />
+                <input
+                  type="text"
+                  placeholder="Full name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoComplete="name"
+                  required
+                  minLength={2}
+                />
+              </div>
+            )}
+
+            <div className="auth-field">
+              <Mail size={15} />
+              <input
+                type="email"
+                placeholder="Email address"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                required
+              />
+            </div>
+
+            <div className="auth-field">
+              <Lock size={15} />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                required
+                minLength={6}
+              />
+            </div>
+
+            <button type="submit" className="auth-submit" disabled={loading}>
+              {loading
+                ? <><RefreshCw className="spin" size={16} /> Processing...</>
+                : <>{mode === "login" ? "Sign In" : "Create Account"} <ArrowRight size={16} /></>}
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            {mode === "login" ? (
+              <span>Don't have an account? <button onClick={() => switchMode("register")}>Register</button></span>
+            ) : (
+              <span>Already have an account? <button onClick={() => switchMode("login")}>Sign in</button></span>
+            )}
+          </div>
+        </div>
+
+        <div className="auth-tagline">
+          SGP4 · XGBoost · Hybrid Fusion · Real-time orbital intelligence
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────── USER MENU ───────────── */
+function UserMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="user-menu">
+      <button className="user-trigger" onClick={() => setOpen(!open)}>
+        <div className="user-avatar">{user.name?.[0]?.toUpperCase() || "U"}</div>
+        <span className="user-name">{user.name}</span>
+      </button>
+      {open && (
+        <div className="user-dropdown" onMouseLeave={() => setOpen(false)}>
+          <div className="user-dropdown-header">
+            <div className="user-avatar-lg">{user.name?.[0]?.toUpperCase() || "U"}</div>
+            <div>
+              <strong>{user.name}</strong>
+              <small>{user.email}</small>
+            </div>
+          </div>
+          <div className="user-dropdown-divider" />
+          <button className="user-dropdown-item" onClick={onLogout}>
+            <LogOut size={14} /> Sign Out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────────── MAIN APP ───────────── */
+function Dashboard({ auth, onLogout }) {
   const [tle, setTle] = useState("");
   const [tleExample, setTleExample] = useState(DEMO_TLE_OPTIONS[0].value);
   const [radius, setRadius] = useState(100);
@@ -366,7 +591,7 @@ function App() {
   const [cdmDragOver, setCdmDragOver] = useState(false);
   const cdmFileRef = useRef();
 
-  function navigateTo(mode) {
+    function navigateTo(mode) {
     const hash = mode === "ML" ? "#model" : "#sgp4";
     if (window.location.hash !== hash) window.history.pushState({}, "", hash);
     setActiveTab(mode);
@@ -408,7 +633,7 @@ function App() {
     const start = new Date(Date.now() + 60000);
     const end = new Date(start.getTime() + Number(hours) * 3600000);
     try {
-      const r = await fetch(`${API}/api/simulations`, {
+      const r = await authFetch(`${API}/api/simulations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -423,7 +648,7 @@ function App() {
       const d = await r.json();
       if (!r.ok) throw Error(d.detail || "Simulation failed");
       setResult(d); setStatus("COMPLETED"); setPlaying(false);
-      const tr = await fetch(`${API}/api/simulations/${d.simulation_id}/trajectories`);
+      const tr = await authFetch(`${API}/api/simulations/${d.simulation_id}/trajectories`);
       if (tr.ok) {
         const td = await tr.json();
         setTrajectories(td.trajectories || []);
@@ -435,7 +660,7 @@ function App() {
   async function fetchRemote() {
     setLoadingTle(true); setError("");
     try {
-      const r = await fetch(`${API}/api/tle/fetch`, {
+      const r = await authFetch(`${API}/api/tle/fetch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ group: remoteGroup }),
@@ -458,7 +683,7 @@ function App() {
     setCdmStatus("ANALYZING"); setCdmError(""); setCdmResult(null);
     const form = new FormData(); form.append("file", file);
     try {
-      const r = await fetch(`${API}/api/cdm/predict`, { method: "POST", body: form });
+      const r = await authFetch(`${API}/api/cdm/predict`, { method: "POST", body: form });
       const d = await r.json();
       if (!r.ok) throw Error(d.detail || "Prediction failed");
       setCdmResult(d); setCdmStatus("COMPLETED");
@@ -531,6 +756,8 @@ function App() {
           <span className="pulse" /> SYSTEM ONLINE
           <i /> SGP4 + XGBoost ML
           <i /> V2.0
+          <i />
+          <UserMenu user={auth.user} onLogout={onLogout} />
         </div>
       </header>
 
@@ -545,7 +772,7 @@ function App() {
                 ? "SGP4 propagation screens TLE trajectories and calculates geometric close approaches."
                 : "XGBoost classifies conjunction risk from uploaded Conjunction Data Message observations."}
             </p>
-            <div className="stats">
+            <div className={`stats ${activeTab === "ML" ? "model-stats" : ""}`}>
               {activeTab === "SGP4" ? (
                 <>
                   <Stat icon={Database} label="SATELLITES" value={result?.satellite_count ?? "—"} />
@@ -555,10 +782,11 @@ function App() {
                 </>
               ) : (
                 <>
+                  <Stat icon={Satellite} label="SATELLITES" value={cdmResult?.satellite_count ?? "—"} sub="CDM objects" />
                   <Stat icon={Database} label="EVENTS" value={cdmResult?.total_events ?? "—"} />
                   <Stat icon={AlertTriangle} label="RED" value={cdmResult?.red_count ?? "—"} />
                   <Stat icon={Gauge} label="YELLOW" value={cdmResult?.yellow_count ?? "—"} />
-                  <Stat icon={Activity} label="ENGINE" value="XGBOOST" sub="CDM" />
+                    <Stat icon={Activity} label="ENGINE" value="XGBOOST" sub="CDM" />
                 </>
               )}
             </div>
@@ -834,6 +1062,26 @@ function App() {
       </footer>
     </div>
   );
+}
+
+/* ───────────── APP ROOT (Auth Guard) ───────────── */
+function App() {
+  const [auth, setAuth] = useState(getStoredAuth);
+
+  function handleAuth(data) {
+    setAuth(data);
+  }
+
+  function handleLogout() {
+    clearAuth();
+    setAuth(null);
+  }
+
+  if (!auth) {
+    return <AuthPage onAuth={handleAuth} />;
+  }
+
+  return <Dashboard auth={auth} onLogout={handleLogout} />;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
@@ -33,6 +33,13 @@ from satnet.risk.pc import ProbabilityOfCollisionCalculator
 from satnet.risk.cdm_predictor import CDMRiskPredictor
 from satnet.risk.hybrid import HybridRiskEngine
 from satnet.reporting import ReportService
+from satnet.auth.service import (
+    RegisterRequest,
+    LoginRequest,
+    register_user,
+    login_user,
+)
+from satnet.auth.dependencies import require_auth
 
 import io
 import pandas as pd
@@ -42,6 +49,7 @@ app = FastAPI(title=settings.app_name, version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,7 +104,7 @@ class FetchRequest(BaseModel):
 
 def configure_app() -> None:
     """Wire services explicitly (dependency composition at the boundary)."""
-    repository = SimulationRepository(settings.database_url)
+    repository = SimulationRepository(settings.mongodb_uri)
     store = SimulationStore(repository)
     app.state.store = store
     app.state.ingestion = TLEIngestionService()
@@ -145,8 +153,46 @@ def health() -> dict:
     }
 
 
+# ================================================================
+#  Authentication Endpoints
+# ================================================================
+
+@app.post("/api/auth/register")
+def auth_register(req: RegisterRequest) -> dict:
+    """Create a new user account and return a JWT token."""
+    try:
+        result = register_user(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {exc}") from exc
+    return result.model_dump()
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest) -> dict:
+    """Authenticate and return a JWT token."""
+    try:
+        result = login_user(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Login failed: {exc}") from exc
+    return result.model_dump()
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(require_auth)) -> dict:
+    """Return the currently authenticated user's profile."""
+    return {"email": user.get("sub"), "name": user.get("name")}
+
+
 @app.post("/api/tle/upload")
-async def upload_tle(request: Request, file: UploadFile = File(...)) -> dict:
+async def upload_tle(request: Request, file: UploadFile = File(...), _user: dict = Depends(require_auth)) -> dict:
     if not file.filename or not file.filename.lower().endswith(
         (".txt", ".tle")
     ):
@@ -170,7 +216,7 @@ async def upload_tle(request: Request, file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/tle/fetch")
-async def fetch_tle(request: Request, req: FetchRequest) -> dict:
+async def fetch_tle(request: Request, req: FetchRequest, _user: dict = Depends(require_auth)) -> dict:
     url = req.url or settings.tle_source_url
     params = {"GROUP": req.group, "FORMAT": "tle"}
     try:
@@ -189,7 +235,7 @@ async def fetch_tle(request: Request, req: FetchRequest) -> dict:
 
 
 @app.post("/api/simulations")
-def create_simulation(request: Request, req: SimulationRequest) -> dict:
+def create_simulation(request: Request, req: SimulationRequest, _user: dict = Depends(require_auth)) -> dict:
     try:
         records = request.app.state.ingestion.parse_text(req.tle_text, "simulation")
         config = PropagationConfig(
@@ -200,11 +246,24 @@ def create_simulation(request: Request, req: SimulationRequest) -> dict:
         summary = request.app.state.service.run(
             records, config, req.safety_radius_km, req.ml_enabled
         )
+        # Tag simulation with user email in MongoDB repository
+        repo = request.app.state.store.repository
+        if repo and hasattr(repo, "save_summary"):
+            repo.save_summary(summary, user_email=_user.get("sub"))
     except SatNetError as exc:
         raise _to_http_error(exc, 422) from exc
     except Exception as exc:
         raise HTTPException(422, f"Simulation setup failed: {exc}") from exc
     return summary.model_dump(mode="json")
+
+
+@app.get("/api/user/simulations")
+def get_user_simulations(request: Request, user: dict = Depends(require_auth)) -> list:
+    """Return past simulation summaries run by the authenticated user from MongoDB."""
+    repo = request.app.state.store.repository
+    if hasattr(repo, "list_summaries"):
+        return repo.list_summaries(limit=30, user_email=user.get("sub"))
+    return []
 
 
 @app.get("/api/simulations/{simulation_id}")
@@ -274,7 +333,7 @@ def report_pdf(request: Request, simulation_id: str) -> Response:
 # ================================================================
 
 @app.post("/api/cdm/predict")
-async def predict_cdm(request: Request, file: UploadFile = File(...)) -> dict:
+async def predict_cdm(request: Request, file: UploadFile = File(...), _user: dict = Depends(require_auth)) -> dict:
     """Upload a CDM CSV file and get hybrid risk predictions.
 
     The system runs the trained XGBoost model on the CDM data and returns
@@ -344,6 +403,7 @@ async def predict_cdm(request: Request, file: UploadFile = File(...)) -> dict:
 
     return {
         "total_events": len(events),
+        "satellite_count": len(events) * 2,
         "red_count": red_count,
         "yellow_count": yellow_count,
         "green_count": green_count,
