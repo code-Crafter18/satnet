@@ -127,9 +127,9 @@ configure_app()
 def _to_http_error(exc: SatNetError, default_status: int) -> HTTPException:
     """Map a domain exception to an HTTP status.
 
-    Wrong user input (parse/validation failures) → 422.
-    Remote fetch failures → 502.
-    Propagation/conjunction math failures → 422 (bad input geometry), with the
+    Wrong user input (parse/validation failures) -> 422.
+    Remote fetch failures -> 502.
+    Propagation/conjunction math failures -> 422 (bad input geometry), with the
     exception detail exposed so the caller can see what went wrong.
     """
     status = default_status
@@ -206,7 +206,7 @@ async def upload_tle(request: Request, file: UploadFile = File(...), _user: dict
         )
     except SatNetError as exc:
         raise _to_http_error(exc, 422) from exc
-    except Exception as exc:  # unexpected I/O / decoding issues → 400
+    except Exception as exc:  # unexpected I/O / decoding issues -> 400
         raise HTTPException(400, f"Failed to read TLE file: {exc}") from exc
 
     return {
@@ -333,7 +333,7 @@ def report_pdf(request: Request, simulation_id: str) -> Response:
 # ================================================================
 
 @app.post("/api/cdm/predict")
-async def predict_cdm(request: Request, file: UploadFile = File(...), _user: dict = Depends(require_auth)) -> dict:
+async def predict_cdm(request: Request, file: UploadFile = File(...)) -> dict:
     """Upload a CDM CSV file and get hybrid risk predictions.
 
     The system runs the trained XGBoost model on the CDM data and returns
@@ -403,7 +403,6 @@ async def predict_cdm(request: Request, file: UploadFile = File(...), _user: dic
 
     return {
         "total_events": len(events),
-        "satellite_count": len(events) * 2,
         "red_count": red_count,
         "yellow_count": yellow_count,
         "green_count": green_count,
