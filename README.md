@@ -20,9 +20,10 @@ reported as `unavailable`, never invented.**
   re-propagating actual SGP4 states (golden-section search, no interpolation)
 - Risk classification from miss-distance thresholds (or real Pc, if ever
   available)
-- REST API (FastAPI), CSV / PDF reports, simulation persistence (SQLite /
-  MySQL)
+- REST API (FastAPI), CSV / PDF reports, simulation persistence (MongoDB)
 - React + Three.js dashboard plotting real TEME trajectories
+- MongoDB-backed authentication (register, login, JWT-protected endpoints)
+- CDM upload with ML-based collision-risk prediction (XGBoost + hybrid fusion)
 
 ## What SatNet does NOT do (by design)
 
@@ -54,7 +55,8 @@ Physics / Risk (satnet/physics, satnet/risk)
         ├── RiskClassifier (thresholds)
         └── ProbabilityOfCollisionCalculator (Pc boundary: explicit N/A)
         ▼
-Infrastructure (satnet/database)       — SQLAlchemy, isolated from physics
+Infrastructure (satnet/database)       — MongoDB (pymongo), isolated from physics
+Auth (satnet/auth)                — JWT-based authentication with bcrypt password hashing
 ```
 
 Layers never skip: the API never calls SGP4 directly, physics never imports
@@ -105,6 +107,30 @@ load `frontend/public/demo/model_demo.csv`. These are ordinary files, not
 embedded in the React source, so they can be replaced with user data or fresh
 TLEs.
 
+## Authentication
+
+SatNet includes a MongoDB-backed authentication module with JWT tokens.
+
+### Endpoints
+
+- `POST /api/auth/register` — Create a new user account
+- `POST /api/auth/login` — Authenticate and receive a JWT
+- `GET /api/auth/me` — Get current user profile (protected)
+
+### Protected routes
+
+The following endpoints require a valid `Authorization: Bearer <token>` header:
+
+- `POST /api/tle/upload`
+- `POST /api/tle/fetch`
+- `POST /api/simulations`
+- `GET /api/user/simulations`
+
+### ML/CDM prediction
+
+- `POST /api/cdm/predict` — Upload a CDM CSV and get hybrid risk predictions
+- `GET /api/ml/status` — Check if the ML model is loaded and available
+
 ## Coordinate frames, units, and time
 
 | Quantity     | Value                                        |
@@ -143,7 +169,7 @@ encounter-plane method exist.
 
 Environment variables (see `.env.example`): `TLE_SOURCE_URL`,
 `DEFAULT_SAFETY_RADIUS_KM`, `DEFAULT_TIME_STEP_SECONDS`,
-`MAX_SIMULATION_HOURS`, `DATABASE_URL`, `ML_ENABLED`, `CORS_ORIGINS`.
+`MAX_SIMULATION_HOURS`, `MONGODB_URI`, `JWT_SECRET`, `ML_ENABLED`, `CORS_ORIGINS`.
 
 ## Future ML/DL architecture
 
@@ -161,7 +187,8 @@ training/validation experiment exists.
 ## Dependencies
 
 Runtime: `sgp4`, `numpy`, `scipy`, `fastapi`, `uvicorn`, `pydantic`,
-`pydantic-settings`, `httpx`, `sqlalchemy`, `pymysql`, `reportlab`,
+`pydantic-settings`, `httpx`, `pymongo`, `bcrypt`, `python-jose`,
+`email-validator`, `pandas`, `scikit-learn`, `xgboost`, `reportlab`,
 `python-multipart`.
 Dev: `pytest`, `pytest-cov`.
 
